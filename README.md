@@ -27,7 +27,7 @@ No servers to run, no ports to open, no accounts beyond GitHub.
 ```bash
 git clone https://github.com/tigrisanimus/crufflink.git
 cd crufflink
-./install.sh        # if you get "Permission denied", run: bash install.sh
+./install.sh
 crufflink pair
 ```
 
@@ -53,11 +53,28 @@ crufflink shell   # shared terminal
 | `crufflink send "hi"` | one-shot chat message (good for scripts) |
 | `crufflink mode ask\|auto\|never` | approval mode for his shell commands (default: `ask`) |
 | `crufflink status` | link status, who's watching |
+| `crufflink daemon install` | install background agent (autostart at login) |
+| `crufflink daemon status\|logs\|stop\|uninstall` | manage the background agent |
 
 Approval modes: **ask** (default) prompts you for every command he sends;
 **auto** runs them immediately; **never** declines them all. In `ask`/`auto`
 shell mode, his commands are typed into *your* visible terminal — you can
 always Ctrl-C.
+
+## Background agent
+
+`crufflink daemon install` sets up a user systemd service that starts at login
+and runs headless:
+
+- holds presence so he knows you're around,
+- shows a desktop notification for his chat messages,
+- runs his commands per your approval mode (`ask` uses a GUI prompt via
+  zenity; without zenity it declines safely).
+
+If `crufflink chat` or `crufflink shell` is open, the daemon stands down and
+lets it handle commands, so nothing runs twice. Manage it with
+`crufflink daemon status|logs|stop|uninstall`. One-shot messages anytime:
+`crufflink send "hi"`.
 
 ## Security model (read this)
 
