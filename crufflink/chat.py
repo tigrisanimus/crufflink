@@ -6,6 +6,7 @@ locally and streams the output back to him.
 
 import base64
 import json
+import os
 import queue
 import subprocess
 import sys
@@ -50,8 +51,8 @@ def presence_loop(b, mode, stop):
             pass
 
 
-def poll_thread(b, seen, exec_q, stop, prompt="> "):
-    """Background: print his chat messages live, queue his exec requests."""
+def poll_thread(b, seen, exec_q, stop, prompt="> ", job_q=None):
+    """Background: print his chat messages live, queue his exec/job requests."""
     while not stop.is_set():
         try:
             msgs = b.poll_lines("to-rob.jsonl", seen, timeout=25)
@@ -71,6 +72,11 @@ def poll_thread(b, seen, exec_q, stop, prompt="> "):
             elif kind == "exec":
                 exec_q.put(m)
                 print("\n[cruff] sent a command — I'll ask before running it.")
+                print(prompt, end="", flush=True)
+            elif kind == "job" and job_q is not None:
+                job_q.put(m)
+                print("\n[cruff] sent a job '%s' — I'll ask before running it."
+                      % m.get("name", "job"))
                 print(prompt, end="", flush=True)
 
 
@@ -205,6 +211,74 @@ def run_with_retry(b, m, cmd, tries=1, delay=10, max_bytes=None):
     return 0
 
 
+def run_job(b, m, name, script, tries=1, delay=10, timeout=600, max_bytes=None):
+    """Run a multi-step job script autonomously on this machine.
+
+    The whole script runs start to finish per attempt; early attempts are
+    quiet (output stays local); only the final attempt streams over the bus.
+    One job in, one result out — no token-burning round-trips in between.
+    """
+    import tempfile
+    try:
+        tries = max(1, int(tries or 1))
+    except Exception:
+        tries = 1
+    try:
+        delay = max(0, int(delay or 0))
+    except Exception:
+        delay = 0
+    try:
+        timeout = max(30, int(timeout or 600))
+    except Exception:
+        timeout = 600
+    if max_bytes is None:
+        max_bytes = _max_output_bytes()
+    path = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False,
+                                         prefix="crufflink-job-") as f:
+            f.write("#!/bin/bash\n" + script + "\n")
+            path = f.name
+        cmd = "timeout %d bash %s" % (timeout, path)
+        for attempt in range(1, tries + 1):
+            if attempt > 1:
+                print("--- job attempt %d/%d (waiting %ds)"
+                      % (attempt, tries, delay))
+                time.sleep(delay)
+            if attempt < tries:
+                try:
+                    r = subprocess.run(cmd, shell=True, capture_output=True,
+                                       text=True, timeout=timeout + 60)
+                except Exception as e:
+                    print("--- job attempt %d errored: %s" % (attempt, e))
+                    continue
+                sys.stdout.write(r.stdout)
+                sys.stdout.flush()
+                if r.returncode == 0:
+                    b.append("to-cruff.jsonl", make_msg(
+                        "out", ref=m.get("id"), stream="exit", code=0,
+                        note="job '%s' succeeded on attempt %d/%d "
+                             "(output kept local)" % (name, attempt, tries)))
+                    print("--- job '%s' done (exit 0, attempt %d)"
+                          % (name, attempt))
+                    return 0
+                print("--- job attempt %d failed (exit %d)"
+                      % (attempt, r.returncode))
+            else:
+                if tries > 1:
+                    print("--- job final attempt %d/%d" % (attempt, tries))
+                print("--- job '%s' running" % name)
+                run_and_stream(b, m, cmd, max_bytes=max_bytes)
+                return 0
+    finally:
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+    return 0
+
+
 def run_exec_interactive(b, m):
     """Run one of his commands in chat mode, with approval. Streams output back."""
     cmd = m.get("cmd", "")
@@ -220,19 +294,44 @@ def run_exec_interactive(b, m):
     run_and_stream(b, m, cmd)
 
 
+def run_job_interactive(b, m):
+    """Run one of his job scripts in chat mode, with approval."""
+    name = m.get("name", "job")
+    script = m.get("script", "")
+    print("\n[cruff] sent a job '%s':" % name)
+    print("  --- script ---")
+    print(script[:1500])
+    print("  --------------")
+    ok = approve_interactive("$ job: %s" % name)
+    try:
+        b.append("to-cruff.jsonl", make_msg("ack", ref=m.get("id"),
+                                           note="running" if ok else "declined"))
+    except Exception as e:
+        print("[ack failed: %s]" % e)
+    if not ok:
+        return
+    run_job(b, m, name, script,
+            tries=m.get("retry_tries", 1),
+            delay=m.get("retry_delay", 10),
+            timeout=m.get("timeout", 600))
+
+
 def run_chat(b):
     seen = seed_seen(b)
     exec_q = queue.Queue()
+    job_q = queue.Queue()
     stop = threading.Event()
     threading.Thread(target=presence_loop, args=(b, "chat", stop),
                      daemon=True).start()
     threading.Thread(target=poll_thread, args=(b, seen, exec_q, stop),
-                     daemon=True).start()
+                     kwargs={"job_q": job_q}, daemon=True).start()
     print("crufflink chat — talking to Cruffalo Crill. Ctrl-D to quit.")
     try:
         while True:
             while not exec_q.empty():
                 run_exec_interactive(b, exec_q.get())
+            while not job_q.empty():
+                run_job_interactive(b, job_q.get())
             try:
                 text = input("> ")
             except EOFError:
