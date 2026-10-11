@@ -120,6 +120,16 @@ def main():
                           help="install: set up autostart at login; run: "
                                "foreground loop (used by the service)")
 
+    p_check = sub.add_parser("check", help="background health checks (daemon)")
+    p_check.add_argument("action", choices=["add", "list", "remove"],
+                         help="add|list|remove a check")
+    p_check.add_argument("name", nargs="?",
+                         help="check name (add/remove)")
+    p_check.add_argument("every", nargs="?", type=int, default=3600,
+                         help="seconds between runs for add (default 3600)")
+    p_check.add_argument("command", nargs=argparse.REMAINDER,
+                         help="command after --")
+
     args = ap.parse_args()
 
     if args.version:
@@ -146,6 +156,10 @@ def main():
             b = _bus_from_config()
             return daemonmod.run_daemon(b)
         return daemonmod.cli(args.action)
+
+    if args.cmd == "check":
+        from . import daemon as daemonmod
+        return daemonmod.check_cli(args)
 
     b = _bus_from_config()
 
