@@ -76,6 +76,30 @@ lets it handle commands, so nothing runs twice. Manage it with
 `crufflink daemon status|logs|stop|uninstall`. One-shot messages anytime:
 `crufflink send "hi"`.
 
+## Token-saving layer
+
+Long command output is capped on the wire (default 32 KB per command; your
+terminal still sees everything). Tune it with `max_output_kb` in
+`~/.config/crufflink/config.json` — the exit message notes when output was
+truncated.
+
+**Health checks** run locally on a schedule and only message him when
+something needs attention — no news is good news:
+
+```bash
+crufflink check add disk 3600 -- bash -c 'test $(df / --output=pcent | tail -1 | tr -dc 0-9) -lt 90'
+crufflink check list
+crufflink check remove disk
+```
+
+A check is a shell command that exits 0 when all is well and nonzero when it
+needs attention. Notifications fire on the ok→failing transition, then at
+most every 4h while still failing.
+
+**Retry policies** keep flaky commands local: his `exec` requests can carry
+`retry_tries`/`retry_delay`, and early attempts run quietly — only the final
+attempt streams output back.
+
 ## Security model (read this)
 
 - The bus repo is **private to your GitHub account**. Anyone holding your token
