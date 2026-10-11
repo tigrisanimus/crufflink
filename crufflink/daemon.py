@@ -121,8 +121,113 @@ def handle_exec_daemon(b, m):
         log("exec declined: %s" % cmd[:80])
         notify("crufflink", "Declined command: %s" % cmd[:80])
         return
-    log("exec running: %s" % cmd[:80])
-    chatmod.run_and_stream(b, m, cmd)
+    tries = m.get("retry_tries", 1)
+    delay = m.get("retry_delay", 10)
+    log("exec running: %s (tries=%s)" % (cmd[:80], tries))
+    chatmod.run_with_retry(b, m, cmd, tries=tries, delay=delay)
+
+
+def checks_path():
+    return os.path.expanduser("~/.config/crufflink/checks.json")
+
+
+def load_checks():
+    try:
+        with open(checks_path()) as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def save_checks(checks):
+    p = checks_path()
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w") as f:
+        json.dump(checks, f, indent=2)
+
+
+def checks_loop(b, stop):
+    """Run his health checks on schedule; message him only on failures.
+
+    A check is a shell command that exits 0 when all is well and nonzero
+    when it needs attention. Notifications fire on the ok->failing
+    transition, then at most every 4h while still failing.
+    """
+    state = {}
+    while not stop.wait(60):
+        for c in load_checks():
+            name = c.get("name") or "unnamed"
+            try:
+                every = max(60, int(c.get("every", 3600)))
+            except Exception:
+                every = 3600
+            st = state.setdefault(name, {"last": 0, "failing": False,
+                                         "last_notify": 0})
+            if time.time() - st["last"] < every:
+                continue
+            st["last"] = time.time()
+            try:
+                r = subprocess.run(c.get("cmd", "true"), shell=True,
+                                   capture_output=True, text=True, timeout=300)
+                ok = r.returncode == 0
+                detail = (r.stdout + r.stderr).strip()[-400:]
+                code = r.returncode
+            except Exception as e:
+                ok, detail, code = False, str(e)[:200], "error"
+            if not ok:
+                if not st["failing"] or time.time() - st["last_notify"] > 14400:
+                    try:
+                        b.append("to-cruff.jsonl", chatmod.make_msg(
+                            "chat", text="check '%s' needs attention "
+                                         "(exit %s): %s" % (name, code, detail)))
+                    except Exception as e:
+                        log("check notify failed: %s" % e)
+                    st["last_notify"] = time.time()
+                    log("check '%s' failing" % name)
+                st["failing"] = True
+            else:
+                if st["failing"]:
+                    log("check '%s' recovered" % name)
+                st["failing"] = False
+
+
+def check_cli(args):
+    """Manage health checks: crufflink check add|list|remove."""
+    checks = load_checks()
+    if args.action == "list":
+        if not checks:
+            print("no checks configured.")
+            print('add one: crufflink check add <name> <seconds> -- <command>')
+            print('the command should exit 0 when fine, nonzero when it needs attention.')
+        for c in checks:
+            print("%s: every %ss: %s" % (c.get("name"), c.get("every"),
+                                        c.get("cmd")))
+        return 0
+    if args.action == "add":
+        if not args.name:
+            print("usage: crufflink check add <name> <seconds> -- <command>")
+            return 1
+        cmd = " ".join(args.command or [])
+        if cmd.startswith("-- "):
+            cmd = cmd[3:]
+        elif cmd == "--":
+            cmd = ""
+        cmd = cmd.strip()
+        if not cmd:
+            print("no command given (put it after --).")
+            return 1
+        checks = [c for c in checks if c.get("name") != args.name]
+        checks.append({"name": args.name, "every": args.every, "cmd": cmd})
+        save_checks(checks)
+        print("check '%s' added (every %ss)." % (args.name, args.every))
+        return 0
+    if args.action == "remove":
+        checks = [c for c in checks if c.get("name") != args.name]
+        save_checks(checks)
+        print("check '%s' removed." % args.name)
+        return 0
+    return 1
 
 
 def run_daemon(b):
@@ -132,6 +237,7 @@ def run_daemon(b):
     signal.signal(signal.SIGINT, lambda s, f: stop.set())
     seen = chatmod.seed_seen(b)
     threading.Thread(target=daemon_presence_loop, args=(b, stop), daemon=True).start()
+    threading.Thread(target=checks_loop, args=(b, stop), daemon=True).start()
     log("started (approval mode: %s)" % configmod.load().get("shell_mode", "ask"))
     while not stop.is_set():
         try:
