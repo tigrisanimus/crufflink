@@ -91,13 +91,49 @@ def approve_interactive(cmd):
         return False
 
 
-def run_and_stream(b, m, cmd):
-    """Run cmd locally, streaming stdout back to the bus in chunks."""
+def _max_output_bytes():
+    try:
+        return int(configmod.load().get("max_output_kb", 32)) * 1024
+    except Exception:
+        return 32768
+
+
+def run_and_stream(b, m, cmd, max_bytes=None):
+    """Run cmd locally, streaming stdout back to the bus in chunks.
+
+    max_bytes caps what goes over the bus (your local terminal still sees
+    everything). Beyond the cap, output is dropped and the exit message notes
+    the truncation. None = config max_output_kb (default 32).
+    """
+    if max_bytes is None:
+        max_bytes = _max_output_bytes()
     print("--- running: %s" % cmd)
+    sent = 0
+    dropped = 0
     try:
         p = subprocess.Popen(cmd, shell=True,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         buf = b""
+
+        def flush(force=False):
+            nonlocal sent, dropped, buf
+            while buf and (len(buf) >= 3072 or force):
+                if sent >= max_bytes:
+                    dropped += len(buf)
+                    buf = b""
+                    return
+                send, buf = buf[:3072], buf[3072:]
+                room = max_bytes - sent
+                if len(send) > room:
+                    dropped += len(send) - room
+                    send = send[:room]
+                if not send:
+                    return
+                b.append("to-cruff.jsonl", make_msg(
+                    "out", ref=m.get("id"), stream="stdout",
+                    data=base64.b64encode(send).decode()))
+                sent += len(send)
+
         while True:
             chunk = p.stdout.read(2048)
             if not chunk:
@@ -105,18 +141,16 @@ def run_and_stream(b, m, cmd):
             sys.stdout.buffer.write(chunk)
             sys.stdout.buffer.flush()
             buf += chunk
-            while len(buf) >= 3072:
-                send, buf = buf[:3072], buf[3072:]
-                b.append("to-cruff.jsonl", make_msg(
-                    "out", ref=m.get("id"), stream="stdout",
-                    data=base64.b64encode(send).decode()))
-        if buf:
-            b.append("to-cruff.jsonl", make_msg(
-                "out", ref=m.get("id"), stream="stdout",
-                data=base64.b64encode(buf).decode()))
+            flush()
+        flush(force=True)
         code = p.wait()
+        note = None
+        if dropped:
+            note = "output truncated: sent %d KB of %d KB total" % (
+                sent // 1024, (sent + dropped) // 1024)
+            print("--- %s" % note)
         b.append("to-cruff.jsonl", make_msg("out", ref=m.get("id"),
-                                          stream="exit", code=code))
+                                          stream="exit", code=code, note=note))
         print("--- done (exit %d)" % code)
     except Exception as e:
         try:
@@ -126,6 +160,49 @@ def run_and_stream(b, m, cmd):
         except Exception:
             pass
         print("--- failed: %s" % e)
+
+
+def run_with_retry(b, m, cmd, tries=1, delay=10, max_bytes=None):
+    """Run cmd up to `tries` times until exit 0.
+
+    Early attempts run quietly (output stays local); only the final attempt
+    streams over the bus. Saves tokens on flaky commands.
+    """
+    try:
+        tries = max(1, int(tries or 1))
+    except Exception:
+        tries = 1
+    try:
+        delay = max(0, int(delay or 0))
+    except Exception:
+        delay = 0
+    for attempt in range(1, tries + 1):
+        if attempt > 1:
+            print("--- attempt %d/%d (waiting %ds)" % (attempt, tries, delay))
+            time.sleep(delay)
+        if attempt < tries:
+            try:
+                r = subprocess.run(cmd, shell=True, capture_output=True,
+                                   text=True, timeout=600)
+            except Exception as e:
+                print("--- attempt %d errored: %s" % (attempt, e))
+                continue
+            sys.stdout.write(r.stdout)
+            sys.stdout.flush()
+            if r.returncode == 0:
+                b.append("to-cruff.jsonl", make_msg(
+                    "out", ref=m.get("id"), stream="exit", code=0,
+                    note="succeeded on attempt %d/%d (output kept local)"
+                         % (attempt, tries)))
+                print("--- done (exit 0 on attempt %d)" % attempt)
+                return 0
+            print("--- attempt %d failed (exit %d)" % (attempt, r.returncode))
+        else:
+            if tries > 1:
+                print("--- final attempt %d/%d" % (attempt, tries))
+            run_and_stream(b, m, cmd, max_bytes=max_bytes)
+            return 0
+    return 0
 
 
 def run_exec_interactive(b, m):
