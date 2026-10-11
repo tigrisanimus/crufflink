@@ -20,6 +20,37 @@ def _bus_from_config():
                       cfg.get("bus_repo", "crufflink-bus"))
 
 
+def _recent(b, name, n=4):
+    try:
+        _, _, content = b.read(name)
+    except Exception:
+        return []
+    msgs = []
+    for ln in (content or "").splitlines():
+        try:
+            msgs.append(json.loads(ln))
+        except Exception:
+            pass
+    return msgs[-n:]
+
+
+def _fmt_msg(m):
+    ts = (m.get("ts") or "")[11:19]
+    kind = m.get("kind")
+    frm = m.get("from")
+    if kind == "chat":
+        preview = m.get("text", "")[:70]
+    elif kind == "exec":
+        preview = "$ " + m.get("cmd", "")[:70]
+    elif kind == "ack":
+        preview = "ack: " + str(m.get("note", ""))
+    elif kind == "out":
+        preview = "output chunk (%s)" % m.get("stream")
+    else:
+        preview = str(kind)
+    return "  %s [%s] %s" % (ts, frm, preview)
+
+
 def _cmd_status(b):
     cfg = configmod.load()
     print("crufflink %s" % __version__)
@@ -44,6 +75,15 @@ def _cmd_status(b):
             print("cruffalo : not watching right now")
     except Exception:
         print("cruffalo : not watching right now")
+    print("recent activity:")
+    print("  to you:")
+    recent = _recent(b, "to-rob.jsonl")
+    print("\n".join(_fmt_msg(m) for m in recent) if recent else "  (nothing yet)")
+    print("  from you:")
+    recent = [m for m in _recent(b, "to-cruff.jsonl", n=8)
+              if not (m.get("kind") == "out" and m.get("stream") == "pty")]
+    recent = recent[-4:]
+    print("\n".join(_fmt_msg(m) for m in recent) if recent else "  (nothing yet)")
 
 
 def main():
