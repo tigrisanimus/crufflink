@@ -211,12 +211,33 @@ def run_with_retry(b, m, cmd, tries=1, delay=10, max_bytes=None):
     return 0
 
 
+def _send_capped(b, ref, text, max_bytes):
+    """Send text over the bus in 3KB chunks, capped at max_bytes.
+    Returns (total_bytes, sent_bytes)."""
+    data = text.encode()
+    total = len(data)
+    sent = 0
+    while data and sent < max_bytes:
+        chunk, data = data[:3072], data[3072:]
+        room = max_bytes - sent
+        if len(chunk) > room:
+            chunk = chunk[:room]
+        if not chunk:
+            break
+        b.append("to-cruff.jsonl", make_msg(
+            "out", ref=ref, stream="stdout",
+            data=base64.b64encode(chunk).decode()))
+        sent += len(chunk)
+    return total, sent
+
+
 def run_job(b, m, name, script, tries=1, delay=10, timeout=600, max_bytes=None):
     """Run a multi-step job script autonomously on this machine.
 
-    The whole script runs start to finish per attempt; early attempts are
-    quiet (output stays local); only the final attempt streams over the bus.
-    One job in, one result out — no token-burning round-trips in between.
+    The whole script runs start to finish per attempt, output captured
+    locally. When an attempt succeeds (or attempts run out), ONE capped
+    result goes over the bus. One job in, one result out — no token-burning
+    round-trips in between.
     """
     import tempfile
     try:
@@ -240,36 +261,36 @@ def run_job(b, m, name, script, tries=1, delay=10, timeout=600, max_bytes=None):
             f.write("#!/bin/bash\n" + script + "\n")
             path = f.name
         cmd = "timeout %d bash %s" % (timeout, path)
+        code, output = -1, ""
+        attempt = 0
         for attempt in range(1, tries + 1):
             if attempt > 1:
                 print("--- job attempt %d/%d (waiting %ds)"
                       % (attempt, tries, delay))
                 time.sleep(delay)
-            if attempt < tries:
-                try:
-                    r = subprocess.run(cmd, shell=True, capture_output=True,
-                                       text=True, timeout=timeout + 60)
-                except Exception as e:
-                    print("--- job attempt %d errored: %s" % (attempt, e))
-                    continue
-                sys.stdout.write(r.stdout)
-                sys.stdout.flush()
-                if r.returncode == 0:
-                    b.append("to-cruff.jsonl", make_msg(
-                        "out", ref=m.get("id"), stream="exit", code=0,
-                        note="job '%s' succeeded on attempt %d/%d "
-                             "(output kept local)" % (name, attempt, tries)))
-                    print("--- job '%s' done (exit 0, attempt %d)"
-                          % (name, attempt))
-                    return 0
-                print("--- job attempt %d failed (exit %d)"
-                      % (attempt, r.returncode))
-            else:
-                if tries > 1:
-                    print("--- job final attempt %d/%d" % (attempt, tries))
-                print("--- job '%s' running" % name)
-                run_and_stream(b, m, cmd, max_bytes=max_bytes)
-                return 0
+            try:
+                r = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True,
+                                   timeout=timeout + 60)
+            except Exception as e:
+                print("--- job attempt %d errored: %s" % (attempt, e))
+                code, output = -1, str(e)[:500]
+                continue
+            sys.stdout.write(r.stdout)
+            sys.stdout.flush()
+            code, output = r.returncode, r.stdout
+            if r.returncode == 0:
+                break
+            print("--- job attempt %d failed (exit %d)"
+                  % (attempt, r.returncode))
+        total, sent = _send_capped(b, m.get("id"), output, max_bytes)
+        note = "job '%s' finished on attempt %d/%d" % (name, attempt, tries)
+        if total > sent:
+            note += " (output truncated: %d KB of %d KB)" % (
+                sent // 1024, total // 1024)
+        b.append("to-cruff.jsonl", make_msg("out", ref=m.get("id"),
+                                          stream="exit", code=code, note=note))
+        print("--- %s (exit %d)" % (note, code))
     finally:
         if path:
             try:
