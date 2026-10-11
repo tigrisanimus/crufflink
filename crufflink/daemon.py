@@ -15,6 +15,7 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
 
@@ -125,6 +126,31 @@ def handle_exec_daemon(b, m):
     delay = m.get("retry_delay", 10)
     log("exec running: %s (tries=%s)" % (cmd[:80], tries))
     chatmod.run_with_retry(b, m, cmd, tries=tries, delay=delay)
+
+
+def handle_job_daemon(b, m):
+    """Run one of his job scripts. Only the daemon runs jobs, so there is
+    no interactive stand-down and nothing can run twice."""
+    name = m.get("name", "job")
+    script = m.get("script", "")
+    if already_acked(b, m.get("id")):
+        log("job skipped (already handled)")
+        return
+    ok = approve_daemon("$ job: %s\n%s" % (name, script[:1500]))
+    try:
+        b.append("to-cruff.jsonl", chatmod.make_msg(
+            "ack", ref=m.get("id"), note="running" if ok else "declined"))
+    except Exception as e:
+        log("ack failed: %s" % e)
+    if not ok:
+        log("job declined: %s" % name)
+        notify("crufflink", "Declined job: %s" % name)
+        return
+    log("job running: %s" % name)
+    chatmod.run_job(b, m, name, script,
+                    tries=m.get("retry_tries", 1),
+                    delay=m.get("retry_delay", 10),
+                    timeout=m.get("timeout", 600))
 
 
 def checks_path():
@@ -256,6 +282,8 @@ def run_daemon(b):
                 notify("Cruffalo Crill", text)
             elif m.get("kind") == "exec":
                 handle_exec_daemon(b, m)
+            elif m.get("kind") == "job":
+                handle_job_daemon(b, m)
     log("stopped")
     return 0
 
