@@ -16,13 +16,10 @@ else
     cp -r crufflink ~/.local/lib/crufflink
     cat > ~/.local/bin/crufflink <<'LAUNCHER'
 #!/bin/sh
-# crufflink launcher (pip-less install)
-exec python3 - "$@" <<'PYEOF'
-import os, sys
-sys.path.insert(0, os.path.expanduser("~/.local/lib"))
-from crufflink.__main__ import main
-sys.exit(main())
-PYEOF
+# crufflink launcher (pip-less install).
+# Uses python3 -c (not a stdin heredoc) so stdin stays on your terminal —
+# otherwise input() prompts hit EOF.
+exec python3 -c "import os, sys; sys.path.insert(0, os.path.expanduser('~/.local/lib')); from crufflink.__main__ import main; sys.exit(main())" "$@"
 LAUNCHER
     chmod +x ~/.local/bin/crufflink
     installed="copy"
