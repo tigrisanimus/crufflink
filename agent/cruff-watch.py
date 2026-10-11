@@ -98,12 +98,19 @@ def main():
     except Exception:
         pass
 
-    # refresh my presence (best effort)
+    # refresh my presence (best effort, at most every 5 min to avoid commit spam)
     try:
-        csha, _ = get_file("bus/cruff-presence.json")
-        put_file("bus/cruff-presence.json",
-                 json.dumps({"who": "cruff", "ts": time.time()}),
-                 csha, "crufflink: cruff presence")
+        csha, cpcontent = get_file("bus/cruff-presence.json")
+        last = 0
+        if cpcontent:
+            try:
+                last = json.loads(cpcontent).get("ts", 0)
+            except Exception:
+                pass
+        if time.time() - last > 300:
+            put_file("bus/cruff-presence.json",
+                     json.dumps({"who": "cruff", "ts": time.time()}),
+                     csha, "crufflink: cruff presence")
     except Exception:
         pass
 
