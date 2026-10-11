@@ -100,6 +100,24 @@ most every 4h while still failing.
 `retry_tries`/`retry_delay`, and early attempts run quietly — only the final
 attempt streams output back.
 
+## Jobs
+
+A job is a whole script his machine runs autonomously — the token-saving
+primitive for multi-step work. One job in, one result out; no round-trips
+in between:
+
+```bash
+# from his side (a worker or script):
+cruff-send.py job "nightly backup" --tries 2 --timeout 900 --file ./backup.sh
+echo 'echo hello' | cruff-send.py job "quick test"
+```
+
+The daemon writes the script to a temp file, runs it with `bash` (under
+`timeout`), retries quietly on failure, and streams only the final attempt
+over the bus (capped like any command). `crufflink chat` can run jobs too.
+Approval works exactly like exec: your mode applies, `ask` pops a GUI
+prompt showing the script.
+
 ## Security model (read this)
 
 - The bus repo is **private to your GitHub account**. Anyone holding your token
