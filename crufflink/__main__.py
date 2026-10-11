@@ -112,6 +112,14 @@ def main():
 
     sub.add_parser("status", help="show link status")
 
+    p_daemon = sub.add_parser("daemon", help="background agent on this machine")
+    p_daemon.add_argument("action", nargs="?",
+                          choices=["install", "uninstall", "start", "stop",
+                                   "restart", "status", "logs", "run"],
+                          default="status",
+                          help="install: set up autostart at login; run: "
+                               "foreground loop (used by the service)")
+
     args = ap.parse_args()
 
     if args.version:
@@ -131,6 +139,13 @@ def main():
         configmod.save(cfg)
         print("shell approval mode: %s" % args.value)
         return 0
+
+    if args.cmd == "daemon":
+        from . import daemon as daemonmod
+        if args.action == "run":
+            b = _bus_from_config()
+            return daemonmod.run_daemon(b)
+        return daemonmod.cli(args.action)
 
     b = _bus_from_config()
 
