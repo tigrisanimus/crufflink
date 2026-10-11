@@ -74,30 +74,25 @@ def poll_thread(b, seen, exec_q, stop, prompt="> "):
                 print(prompt, end="", flush=True)
 
 
-def run_exec_interactive(b, m):
-    """Run one of his commands in chat mode, with approval. Streams output back."""
-    cmd = m.get("cmd", "")
+def approve_interactive(cmd):
+    """Approval via terminal prompt. Returns True if the command may run."""
     cfg = configmod.load()
     smode = cfg.get("shell_mode", "ask")
-    print("\n[cruff] wants to run:\n  $ %s" % cmd)
-    ok = True
+    if smode == "auto":
+        return True
     if smode == "never":
         print("(declined automatically: shell_mode=never)")
-        ok = False
-    elif smode != "auto":
-        try:
-            ans = input("run it? [y/N] ").strip().lower()
-            ok = ans in ("y", "yes")
-        except (EOFError, KeyboardInterrupt):
-            print()
-            ok = False
+        return False
     try:
-        b.append("to-cruff.jsonl", make_msg("ack", ref=m.get("id"),
-                                           note="running" if ok else "declined"))
-    except Exception as e:
-        print("[ack failed: %s]" % e)
-    if not ok:
-        return
+        ans = input("run it? [y/N] ").strip().lower()
+        return ans in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return False
+
+
+def run_and_stream(b, m, cmd):
+    """Run cmd locally, streaming stdout back to the bus in chunks."""
     print("--- running: %s" % cmd)
     try:
         p = subprocess.Popen(cmd, shell=True,
@@ -131,6 +126,21 @@ def run_exec_interactive(b, m):
         except Exception:
             pass
         print("--- failed: %s" % e)
+
+
+def run_exec_interactive(b, m):
+    """Run one of his commands in chat mode, with approval. Streams output back."""
+    cmd = m.get("cmd", "")
+    print("\n[cruff] wants to run:\n  $ %s" % cmd)
+    ok = approve_interactive(cmd)
+    try:
+        b.append("to-cruff.jsonl", make_msg("ack", ref=m.get("id"),
+                                           note="running" if ok else "declined"))
+    except Exception as e:
+        print("[ack failed: %s]" % e)
+    if not ok:
+        return
+    run_and_stream(b, m, cmd)
 
 
 def run_chat(b):
