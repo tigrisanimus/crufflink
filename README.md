@@ -113,10 +113,10 @@ echo 'echo hello' | cruff-send.py job "quick test"
 ```
 
 The daemon writes the script to a temp file, runs it with `bash` (under
-`timeout`), retries quietly on failure, and streams only the final attempt
-over the bus (capped like any command). `crufflink chat` can run jobs too.
-Approval works exactly like exec: your mode applies, `ask` pops a GUI
-prompt showing the script.
+`timeout`), and retries quietly on failure. When an attempt succeeds — or
+attempts run out — exactly one capped result comes back over the bus.
+`crufflink chat` can run jobs too. Approval works exactly like exec: your
+mode applies, `ask` pops a GUI prompt showing the script.
 
 ## Security model (read this)
 
