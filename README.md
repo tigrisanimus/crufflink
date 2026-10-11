@@ -27,7 +27,7 @@ No servers to run, no ports to open, no accounts beyond GitHub.
 ```bash
 git clone https://github.com/tigrisanimus/crufflink.git
 cd crufflink
-./install.sh
+./install.sh        # if you get "Permission denied", run: bash install.sh
 crufflink pair
 ```
 
